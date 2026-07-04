@@ -26,37 +26,30 @@ public class FlutterRTMPStreaming : NSObject {
         eventSink = sink
     }
 
-    /// Returns the current interface orientation using the modern iOS 13+ API
-    /// (UIWindowScene.interfaceOrientation), falling back to the deprecated
-    /// UIApplication.statusBarOrientation on older systems.
-    /// UIApplication.statusBarOrientation is unreliable on iOS 13+ — it often
-    /// lags behind or reports .portrait when the UI has already rotated to
-    /// landscape, which causes the H.264 stream to be tagged with the wrong
-    /// rotation metadata and renders rotated 90° on the playback side.
-    private func currentInterfaceOrientation() -> UIInterfaceOrientation {
-        if #available(iOS 13.0, *) {
-            if let scene = UIApplication.shared.connectedScenes
-                .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
-                return scene.interfaceOrientation
-            }
-            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-                return scene.interfaceOrientation
-            }
+    /// Returns the current device orientation from the accelerometer.
+    /// Uses UIDevice.current.orientation (physical orientation) rather than
+    /// UIInterfaceOrientation because Flutter's SystemChrome.setPreferredOrientations
+    /// doesn't always rotate the iOS window scene — so windowScene.interfaceOrientation
+    /// can report .portrait even when the phone is held landscape. The physical
+    /// device orientation always reflects how the phone is actually held.
+    private func currentDeviceOrientation() -> AVCaptureVideoOrientation? {
+        let device = UIDevice.current
+        if !device.isGeneratingDeviceOrientationNotifications {
+            device.beginGeneratingDeviceOrientationNotifications()
         }
-        return UIApplication.shared.statusBarOrientation
+        return DeviceUtil.videoOrientation(by: device.orientation)
     }
 
-    /// Applies the current interface orientation to the RTMP stream encoder.
-    /// When the UI is landscape we also ensure the encoder is configured with
-    /// landscape (width > height) dimensions so HaishinKit doesn't squish
+    /// Applies the current device orientation to the RTMP stream encoder.
+    /// When the device is landscape we also ensure the encoder is configured
+    /// with landscape (width > height) dimensions so HaishinKit doesn't squish
     /// portrait-tagged capture frames into a landscape output container.
     private func applyCurrentOrientation() {
-        let interfaceOrientation = currentInterfaceOrientation()
-        guard let orientation = DeviceUtil.videoOrientation(by: interfaceOrientation) else {
+        guard let orientation = currentDeviceOrientation() else {
             return
         }
         self.rtmpStream.orientation = orientation
-        print(String(format: "Orient %d (from interfaceOrientation %d)", orientation.rawValue, interfaceOrientation.rawValue))
+        print(String(format: "Orient %d (from device orientation)", orientation.rawValue))
         switch orientation {
         case .landscapeLeft, .landscapeRight:
             self.rtmpStream.videoSettings[.width] = self.streamWidth
