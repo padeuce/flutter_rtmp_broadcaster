@@ -24,6 +24,10 @@ public class FlutterRTMPStreaming : NSObject {
     @objc
     public init(sink: @escaping FlutterEventSink) {
         eventSink = sink
+        // Start device orientation notifications at construction so that
+        // UIDevice.current.orientation returns accurate values by the time
+        // open() runs, rather than .unknown on the first call.
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
     }
 
     /// Returns the current device orientation from the accelerometer.
@@ -37,7 +41,17 @@ public class FlutterRTMPStreaming : NSObject {
         if !device.isGeneratingDeviceOrientationNotifications {
             device.beginGeneratingDeviceOrientationNotifications()
         }
-        return DeviceUtil.videoOrientation(by: device.orientation)
+        if let orientation = DeviceUtil.videoOrientation(by: device.orientation) {
+            return orientation
+        }
+        // Fallback when the accelerometer hasn't settled yet (e.g. .unknown
+        // or .faceUp/.faceDown). The window scene orientation lags the
+        // physical orientation in Flutter apps but is at least never .unknown.
+        if #available(iOS 13.0, *),
+           let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            return DeviceUtil.videoOrientation(by: scene.interfaceOrientation)
+        }
+        return DeviceUtil.videoOrientation(by: UIApplication.shared.statusBarOrientation)
     }
 
     /// Applies the current device orientation to the RTMP stream encoder.
@@ -94,14 +108,13 @@ public class FlutterRTMPStreaming : NSObject {
         self.streamHeight = height
         // Run this on the ui thread.
         DispatchQueue.main.async {
-            self.applyCurrentOrientation()
-
-            // Keep the encoder orientation in sync with the interface
-            // orientation while streaming. The previous code only set it once
-            // at open() time, so flipping the device between landscape-left
-            // and landscape-right mid-stream left the stream tagged with the
-            // rotation that was current at start.
+            // Ensure device orientation notifications are running so the
+            // first read of UIDevice.current.orientation is accurate.
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+
+            // Subscribe before applying so the first orientation-change
+            // notification (which fires when notifications are first
+            // enabled on iOS) is captured.
             self.orientationObserver = NotificationCenter.default.addObserver(
                 forName: UIDevice.orientationDidChangeNotification,
                 object: nil,
@@ -109,6 +122,8 @@ public class FlutterRTMPStreaming : NSObject {
             ) { [weak self] _ in
                 self?.applyCurrentOrientation()
             }
+
+            self.applyCurrentOrientation()
 
             self.rtmpConnection.connect(self.url ?? "frog")
         }
