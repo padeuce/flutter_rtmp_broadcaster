@@ -17,12 +17,66 @@ public class FlutterRTMPStreaming : NSObject {
     private var retries: Int = 0
     private let eventSink: FlutterEventSink
     private let myDelegate = MyRTMPStreamQoSDelagate()
-    
+    private var orientationObserver: NSObjectProtocol?
+    private var streamWidth: Int = 0
+    private var streamHeight: Int = 0
+
     @objc
     public init(sink: @escaping FlutterEventSink) {
         eventSink = sink
+        // Start device orientation notifications at construction so that
+        // UIDevice.current.orientation returns accurate values by the time
+        // open() runs, rather than .unknown on the first call.
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
     }
-    
+
+    /// Returns the current device orientation from the accelerometer.
+    /// Uses UIDevice.current.orientation (physical orientation) rather than
+    /// UIInterfaceOrientation because Flutter's SystemChrome.setPreferredOrientations
+    /// doesn't always rotate the iOS window scene — so windowScene.interfaceOrientation
+    /// can report .portrait even when the phone is held landscape. The physical
+    /// device orientation always reflects how the phone is actually held.
+    private func currentDeviceOrientation() -> AVCaptureVideoOrientation? {
+        let device = UIDevice.current
+        if !device.isGeneratingDeviceOrientationNotifications {
+            device.beginGeneratingDeviceOrientationNotifications()
+        }
+        if let orientation = DeviceUtil.videoOrientation(by: device.orientation) {
+            return orientation
+        }
+        // Fallback when the accelerometer hasn't settled yet (e.g. .unknown
+        // or .faceUp/.faceDown). The window scene orientation lags the
+        // physical orientation in Flutter apps but is at least never .unknown.
+        if #available(iOS 13.0, *),
+           let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            return DeviceUtil.videoOrientation(by: scene.interfaceOrientation)
+        }
+        return DeviceUtil.videoOrientation(by: UIApplication.shared.statusBarOrientation)
+    }
+
+    /// Configures the RTMP encoder to produce an upright video.
+    ///
+    /// The camera capture connection is hardcoded to `.portrait` in
+    /// `RtmppublisherPlugin.m`, so the buffers that reach
+    /// `addVideoDataWithBuffer:` are already 480x640 portrait frames with
+    /// content oriented for portrait viewing. The RTMPStream's internal
+    /// `output.connections.videoOrientation` does NOT apply a physical
+    /// rotation to externally-fed buffers — it only affects the H.264
+    /// display matrix. So to produce an upright video we must:
+    ///
+    /// 1. Set encoder dimensions to match the portrait input (480x640)
+    /// 2. Set rtmpStream.orientation to .portrait (no display rotation)
+    ///
+    /// The resulting stream is a portrait video (tall) with upright
+    /// content. In a landscape browser player it will be letterboxed
+    /// with black bars on the sides — not rotated.
+    private func applyCurrentOrientation() {
+        self.rtmpStream.orientation = .portrait
+        self.rtmpStream.videoSettings[.width] = self.streamHeight
+        self.rtmpStream.videoSettings[.height] = self.streamWidth
+        print("Orient .portrait (fixed), dims \(self.streamHeight)x\(self.streamWidth)")
+    }
+
     @objc
     public func open(url: String, width: Int, height: Int, bitrate: Int) {
         rtmpStream = RTMPStream(connection: rtmpConnection)
@@ -33,13 +87,13 @@ public class FlutterRTMPStreaming : NSObject {
         ]
         rtmpConnection.addEventListener(.rtmpStatus, selector:#selector(rtmpStatusHandler), observer: self)
         rtmpConnection.addEventListener(.ioError, selector: #selector(rtmpErrorHandler), observer: self)
-        
+
         let uri = URL(string: url)
         self.name = uri?.pathComponents.last
         var bits = url.components(separatedBy: "/")
         bits.removeLast()
         self.url = bits.joined(separator: "/")
-        
+
         // TODO: Da correggere
         rtmpStream.videoSettings = [
             .width: width,
@@ -53,20 +107,27 @@ public class FlutterRTMPStreaming : NSObject {
         ]
         rtmpStream.delegate = myDelegate
         self.retries = 0
+        self.streamWidth = width
+        self.streamHeight = height
         // Run this on the ui thread.
         DispatchQueue.main.async {
-            if let orientation = DeviceUtil.videoOrientation(by:  UIApplication.shared.statusBarOrientation) {
-                self.rtmpStream.orientation = orientation
-                print(String(format:"Orient %d", orientation.rawValue))
-                switch (orientation) {
-                case .landscapeLeft, .landscapeRight:
-                    self.rtmpStream.videoSettings[.width] = width;
-                    self.rtmpStream.videoSettings[.height] = height;
-                    break;
-                default:
-                    break;
-                }
+            // Ensure device orientation notifications are running so the
+            // first read of UIDevice.current.orientation is accurate.
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+
+            // Subscribe before applying so the first orientation-change
+            // notification (which fires when notifications are first
+            // enabled on iOS) is captured.
+            self.orientationObserver = NotificationCenter.default.addObserver(
+                forName: UIDevice.orientationDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.applyCurrentOrientation()
             }
+
+            self.applyCurrentOrientation()
+
             self.rtmpConnection.connect(self.url ?? "frog")
         }
     }
@@ -183,6 +244,11 @@ public class FlutterRTMPStreaming : NSObject {
     
     @objc
     public func close() {
+        if let observer = orientationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            orientationObserver = nil
+        }
+        UIDevice.current.endGeneratingDeviceOrientationNotifications()
         rtmpConnection.close()
     }
 }

@@ -189,6 +189,7 @@ FlutterStreamHandler>
 @property(strong, nonatomic) AVAssetWriterInputPixelBufferAdaptor *assetWriterPixelBufferAdaptor;
 @property(strong, nonatomic) AVCaptureVideoDataOutput *videoOutput;
 @property(strong, nonatomic) AVCaptureAudioDataOutput *audioOutput;
+@property(strong, nonatomic) AVCaptureConnection *videoConnection;
 @property(strong, nonatomic) FlutterRTMPStreaming *rtmpStream;
 @property(assign, nonatomic) BOOL isRecording;
 
@@ -273,7 +274,21 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
     if ([_captureDevice position] == AVCaptureDevicePositionFront) {
         connection.videoMirrored = YES;
     }
-    connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+    // Set the capture connection to landscape-right so the buffers delivered
+    // to the Flutter preview and the RTMP publisher are already in landscape
+    // orientation. The Flutter preview widget handles the final rotation
+    // Store the connection and set its orientation to match the current
+    // device orientation. The Flutter preview handles its own rotation
+    // (via NativeDeviceOrientedWidget + RotatedBox) so the preview stays
+    // upright, and the RTMP encoder produces a landscape video whose
+    // content matches what the user sees in the preview.
+    _videoConnection = connection;
+    [self updateVideoConnectionOrientation];
+    [UIDevice.currentDevice beginGeneratingDeviceOrientationNotifications];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(deviceOrientationDidChange:)
+                                                 name:UIDeviceOrientationDidChangeNotification
+                                               object:nil];
     [_captureSession addInputWithNoConnections:_captureVideoInput];
     [_captureSession addOutputWithNoConnections:_captureVideoOutput];
     [_captureSession addConnection:connection];
@@ -282,9 +297,43 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
     [_captureSession addOutput:_capturePhotoOutput];
     _motionManager = [[CMMotionManager alloc] init];
     [_motionManager startAccelerometerUpdates];
-    
+
     [self setCaptureSessionPreset:_resolutionPreset];
     return self;
+}
+
+- (void)deviceOrientationDidChange:(NSNotification *)notification {
+    [self updateVideoConnectionOrientation];
+}
+
+- (void)updateVideoConnectionOrientation {
+    if (!_videoConnection || !_videoConnection.isVideoOrientationSupported) {
+        return;
+    }
+    // Map UIDeviceOrientation to AVCaptureVideoOrientation. The
+    // .landscapeLeft <-> .landscapeRight swap accounts for the front-camera
+    // mirror and the fact that the device and capture conventions are
+    // opposite.
+    UIDeviceOrientation deviceOrientation = UIDevice.currentDevice.orientation;
+    AVCaptureVideoOrientation target;
+    switch (deviceOrientation) {
+        case UIDeviceOrientationLandscapeLeft:
+            target = AVCaptureVideoOrientationLandscapeRight;
+            break;
+        case UIDeviceOrientationLandscapeRight:
+            target = AVCaptureVideoOrientationLandscapeLeft;
+            break;
+        case UIDeviceOrientationPortraitUpsideDown:
+            target = AVCaptureVideoOrientationPortraitUpsideDown;
+            break;
+        case UIDeviceOrientationPortrait:
+            target = AVCaptureVideoOrientationPortrait;
+            break;
+        default:
+            // .faceUp, .faceDown, .unknown: keep the current orientation.
+            return;
+    }
+    _videoConnection.videoOrientation = target;
 }
 
 - (void)start {
@@ -651,6 +700,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         CFRelease(_latestPixelBuffer);
     }
     [_motionManager stopAccelerometerUpdates];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (CVPixelBufferRef)copyPixelBuffer {
