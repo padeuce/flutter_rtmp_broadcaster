@@ -17,12 +17,56 @@ public class FlutterRTMPStreaming : NSObject {
     private var retries: Int = 0
     private let eventSink: FlutterEventSink
     private let myDelegate = MyRTMPStreamQoSDelagate()
-    
+    private var orientationObserver: NSObjectProtocol?
+    private var streamWidth: Int = 0
+    private var streamHeight: Int = 0
+
     @objc
     public init(sink: @escaping FlutterEventSink) {
         eventSink = sink
     }
-    
+
+    /// Returns the current interface orientation using the modern iOS 13+ API
+    /// (UIWindowScene.interfaceOrientation), falling back to the deprecated
+    /// UIApplication.statusBarOrientation on older systems.
+    /// UIApplication.statusBarOrientation is unreliable on iOS 13+ — it often
+    /// lags behind or reports .portrait when the UI has already rotated to
+    /// landscape, which causes the H.264 stream to be tagged with the wrong
+    /// rotation metadata and renders rotated 90° on the playback side.
+    private func currentInterfaceOrientation() -> UIInterfaceOrientation {
+        if #available(iOS 13.0, *) {
+            if let scene = UIApplication.shared.connectedScenes
+                .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
+                return scene.interfaceOrientation
+            }
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                return scene.interfaceOrientation
+            }
+        }
+        return UIApplication.shared.statusBarOrientation
+    }
+
+    /// Applies the current interface orientation to the RTMP stream encoder.
+    /// When the UI is landscape we also ensure the encoder is configured with
+    /// landscape (width > height) dimensions so HaishinKit doesn't squish
+    /// portrait-tagged capture frames into a landscape output container.
+    private func applyCurrentOrientation() {
+        let interfaceOrientation = currentInterfaceOrientation()
+        guard let orientation = DeviceUtil.videoOrientation(by: interfaceOrientation) else {
+            return
+        }
+        self.rtmpStream.orientation = orientation
+        print(String(format: "Orient %d (from interfaceOrientation %d)", orientation.rawValue, interfaceOrientation.rawValue))
+        switch orientation {
+        case .landscapeLeft, .landscapeRight:
+            self.rtmpStream.videoSettings[.width] = self.streamWidth
+            self.rtmpStream.videoSettings[.height] = self.streamHeight
+        default:
+            self.rtmpStream.videoSettings[.width] = self.streamHeight
+            self.rtmpStream.videoSettings[.height] = self.streamWidth
+        }
+    }
+
     @objc
     public func open(url: String, width: Int, height: Int, bitrate: Int) {
         rtmpStream = RTMPStream(connection: rtmpConnection)
@@ -33,13 +77,13 @@ public class FlutterRTMPStreaming : NSObject {
         ]
         rtmpConnection.addEventListener(.rtmpStatus, selector:#selector(rtmpStatusHandler), observer: self)
         rtmpConnection.addEventListener(.ioError, selector: #selector(rtmpErrorHandler), observer: self)
-        
+
         let uri = URL(string: url)
         self.name = uri?.pathComponents.last
         var bits = url.components(separatedBy: "/")
         bits.removeLast()
         self.url = bits.joined(separator: "/")
-        
+
         // TODO: Da correggere
         rtmpStream.videoSettings = [
             .width: width,
@@ -53,20 +97,26 @@ public class FlutterRTMPStreaming : NSObject {
         ]
         rtmpStream.delegate = myDelegate
         self.retries = 0
+        self.streamWidth = width
+        self.streamHeight = height
         // Run this on the ui thread.
         DispatchQueue.main.async {
-            if let orientation = DeviceUtil.videoOrientation(by:  UIApplication.shared.statusBarOrientation) {
-                self.rtmpStream.orientation = orientation
-                print(String(format:"Orient %d", orientation.rawValue))
-                switch (orientation) {
-                case .landscapeLeft, .landscapeRight:
-                    self.rtmpStream.videoSettings[.width] = width;
-                    self.rtmpStream.videoSettings[.height] = height;
-                    break;
-                default:
-                    break;
-                }
+            self.applyCurrentOrientation()
+
+            // Keep the encoder orientation in sync with the interface
+            // orientation while streaming. The previous code only set it once
+            // at open() time, so flipping the device between landscape-left
+            // and landscape-right mid-stream left the stream tagged with the
+            // rotation that was current at start.
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+            self.orientationObserver = NotificationCenter.default.addObserver(
+                forName: UIDevice.orientationDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.applyCurrentOrientation()
             }
+
             self.rtmpConnection.connect(self.url ?? "frog")
         }
     }
@@ -183,6 +233,11 @@ public class FlutterRTMPStreaming : NSObject {
     
     @objc
     public func close() {
+        if let observer = orientationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            orientationObserver = nil
+        }
+        UIDevice.current.endGeneratingDeviceOrientationNotifications()
         rtmpConnection.close()
     }
 }
