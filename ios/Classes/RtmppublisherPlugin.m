@@ -273,7 +273,13 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
     if ([_captureDevice position] == AVCaptureDevicePositionFront) {
         connection.videoMirrored = YES;
     }
-    connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+    // Set the capture connection to landscape-right so the buffers delivered
+    // to the Flutter preview and the RTMP publisher are already in landscape
+    // orientation. The Flutter preview widget handles the final rotation
+    // (via NativeDeviceOrientedWidget + RotatedBox) so the preview stays
+    // upright, and the RTMP encoder produces a landscape video without
+    // needing an additional rotation pass.
+    connection.videoOrientation = AVCaptureVideoOrientationLandscapeRight;
     [_captureSession addInputWithNoConnections:_captureVideoInput];
     [_captureSession addOutputWithNoConnections:_captureVideoOutput];
     [_captureSession addConnection:connection];

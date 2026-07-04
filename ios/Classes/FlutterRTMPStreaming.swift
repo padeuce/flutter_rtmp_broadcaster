@@ -54,24 +54,27 @@ public class FlutterRTMPStreaming : NSObject {
         return DeviceUtil.videoOrientation(by: UIApplication.shared.statusBarOrientation)
     }
 
-    /// Applies the current device orientation to the RTMP stream encoder.
-    /// When the device is landscape we also ensure the encoder is configured
-    /// with landscape (width > height) dimensions so HaishinKit doesn't squish
-    /// portrait-tagged capture frames into a landscape output container.
+    /// Configures the RTMP encoder to produce an upright video.
+    ///
+    /// The camera capture connection is hardcoded to `.portrait` in
+    /// `RtmppublisherPlugin.m`, so the buffers that reach
+    /// `addVideoDataWithBuffer:` are already 480x640 portrait frames with
+    /// content oriented for portrait viewing. The RTMPStream's internal
+    /// `output.connections.videoOrientation` does NOT apply a physical
+    /// rotation to externally-fed buffers — it only affects the H.264
+    /// display matrix. So to produce an upright video we must:
+    ///
+    /// 1. Set encoder dimensions to match the portrait input (480x640)
+    /// 2. Set rtmpStream.orientation to .portrait (no display rotation)
+    ///
+    /// The resulting stream is a portrait video (tall) with upright
+    /// content. In a landscape browser player it will be letterboxed
+    /// with black bars on the sides — not rotated.
     private func applyCurrentOrientation() {
-        guard let orientation = currentDeviceOrientation() else {
-            return
-        }
-        self.rtmpStream.orientation = orientation
-        print(String(format: "Orient %d (from device orientation)", orientation.rawValue))
-        switch orientation {
-        case .landscapeLeft, .landscapeRight:
-            self.rtmpStream.videoSettings[.width] = self.streamWidth
-            self.rtmpStream.videoSettings[.height] = self.streamHeight
-        default:
-            self.rtmpStream.videoSettings[.width] = self.streamHeight
-            self.rtmpStream.videoSettings[.height] = self.streamWidth
-        }
+        self.rtmpStream.orientation = .portrait
+        self.rtmpStream.videoSettings[.width] = self.streamHeight
+        self.rtmpStream.videoSettings[.height] = self.streamWidth
+        print("Orient .portrait (fixed), dims \(self.streamHeight)x\(self.streamWidth)")
     }
 
     @objc
