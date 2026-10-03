@@ -293,6 +293,31 @@ class CameraNativeView(
         }
     }
 
+    /**
+     * Switch between the front and back camera in place, on the existing
+     * preview/stream. The underlying RtmpCamera2 reopens the camera on the
+     * same SurfaceTexture, so the OpenGL pipeline is not rebuilt against a
+     * destroyed surface (which crashes on many devices).
+     *
+     * Ignored when neither a preview nor a stream is running.
+     */
+    fun switchCamera(result: MethodChannel.Result) {
+        try {
+            if (rtmpCamera.isOnPreview || rtmpCamera.isStreaming) {
+                rtmpCamera.switchCamera()
+                cameraName = if (rtmpCamera.isFrontCamera) {
+                    "1"
+                } else {
+                    "0"
+                }
+            }
+            result.success(null)
+        } catch (e: Exception) {
+            Log.e("CameraNativeView", "switchCamera failed", e)
+            result.error("switchCameraFailed", e.message, null)
+        }
+    }
+
     fun getStreamStatistics(result: MethodChannel.Result) {
         val ret = hashMapOf<String, Any>()
         ret["cacheSize"] = rtmpCamera.cacheSize

@@ -217,6 +217,7 @@ FlutterStreamHandler>
 
 - (void)start;
 - (void)stop;
+- (BOOL)switchCamera;
 - (void)startVideoRecordingAtPath:(NSString *)path result:(FlutterResult)result;
 - (void)startVideoStreamingAtUrl:(NSString *)url bitrate:(NSNumber *)bitrate result:(FlutterResult)result;
 - (void)startVideoRecordingAndStreamingAtUrl:(NSString *)url bitrate:(NSNumber *)bitrate filePath:(NSString *) result:(FlutterResult)result;
@@ -342,6 +343,69 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
 
 - (void)stop {
     [_captureSession stopRunning];
+}
+
+/// Switches between the front and back camera in place, keeping the same
+/// capture session and video connection so the preview texture and RTMP
+/// stream keep working. No-op when only one camera is available.
+- (BOOL)switchCamera {
+    AVCaptureDevicePosition targetPosition =
+        ([_captureDevice position] == AVCaptureDevicePositionFront)
+            ? AVCaptureDevicePositionBack
+            : AVCaptureDevicePositionFront;
+
+    AVCaptureDeviceDiscoverySession *discovery = [AVCaptureDeviceDiscoverySession
+        discoverySessionWithDeviceTypes:@[ AVCaptureDeviceTypeBuiltInWideAngleCamera ]
+                              mediaType:AVMediaTypeVideo
+                               position:targetPosition];
+    AVCaptureDevice *newDevice = discovery.devices.firstObject;
+    if (newDevice == nil) {
+        return NO;
+    }
+
+    NSError *error = nil;
+    AVCaptureDeviceInput *newInput = [AVCaptureDeviceInput deviceInputWithDevice:newDevice
+                                                                           error:&error];
+    if (error || newInput == nil) {
+        _eventSink(@{
+            @"event" : @"error",
+            @"errorDescription" : @"Failed to switch camera input."
+        });
+        return NO;
+    }
+
+    [_captureSession beginConfiguration];
+    [_captureSession removeInput:_captureVideoInput];
+    if ([_captureSession canAddInput:newInput]) {
+        [_captureSession addInput:newInput];
+        _captureVideoInput = newInput;
+        _captureDevice = newDevice;
+    } else {
+        // Re-add the previous input so the session stays usable.
+        [_captureSession addInput:_captureVideoInput];
+        [_captureSession commitConfiguration];
+        _eventSink(@{
+            @"event" : @"error",
+            @"errorDescription" : @"Failed to switch camera input."
+        });
+        return NO;
+    }
+
+    // Rebuild the connection against the new input port and mirror the front
+    // camera, then re-apply the current device orientation.
+    AVCaptureConnection *connection =
+        [AVCaptureConnection connectionWithInputPorts:_captureVideoInput.ports
+                                               output:_captureVideoOutput];
+    if ([_captureDevice position] == AVCaptureDevicePositionFront) {
+        connection.videoMirrored = YES;
+    }
+    [_captureSession addConnection:connection];
+    _videoConnection = connection;
+    [_captureSession commitConfiguration];
+
+    [self updateVideoConnectionOrientation];
+    [self setCaptureSessionPreset:_resolutionPreset];
+    return YES;
 }
 
 - (void)captureToFile:(NSString *)path result:(FlutterResult)result {
@@ -1172,6 +1236,14 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     } else if ([@"resumeVideoStreaming" isEqualToString:call.method]) {
         [_camera resumeVideoStreaming];
         result(nil);
+    } else if ([@"switchCamera" isEqualToString:call.method]) {
+        if (_camera != nil && [_camera switchCamera]) {
+            result(nil);
+        } else {
+            result([FlutterError errorWithCode:@"switchCameraFailed"
+                                       message:@"Could not switch camera."
+                                       details:nil]);
+        }
     } else if ([@"getStreamStatistics" isEqualToString:call.method]) {
         NSDictionary *dict = [_camera getStreamStatistics];
         result(dict);

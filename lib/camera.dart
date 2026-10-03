@@ -418,6 +418,29 @@ class CameraController extends ValueNotifier<CameraValue> {
     await _channel.invokeMethod<void>('prepareForVideoStreaming');
   }
 
+  /// Switches between the front and back camera in place, on the existing
+  /// native preview/stream.
+  ///
+  /// Unlike disposing this controller and creating a new one, this keeps the
+  /// platform view and its `SurfaceTexture` alive, so the OpenGL pipeline is
+  /// never rebuilt against a destroyed surface. This is the only safe way to
+  /// switch cameras on Android while a preview or RTMP stream is running.
+  ///
+  /// Throws a [CameraException] if the switch fails.
+  Future<void> switchCamera() async {
+    if (_isDisposed) {
+      throw CameraException(
+        'Disposed CameraController.',
+        'switchCamera was called on a disposed CameraController.',
+      );
+    }
+    try {
+      await _channel.invokeMethod<void>('switchCamera');
+    } on PlatformException catch (e) {
+      throw CameraException(e.code, e.message);
+    }
+  }
+
   /// Listen to events from the native plugins.
   ///
   /// A "cameraClosing" event is sent when the camera is closed automatically by the system (for example when the app go to background). The plugin will try to reopen the camera automatically but any ongoing recording will end.

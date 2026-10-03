@@ -169,6 +169,15 @@ class MethodCallHandlerImplNew(
                 }
             }
 
+            "switchCamera" -> {
+                Log.i("Stuff", "switchCamera")
+                try {
+                    getCameraView()?.switchCamera(result)
+                } catch (e: Exception) {
+                    handleException(e, result)
+                }
+            }
+
             "getStreamStatistics" -> {
                 Log.i("Stuff", "getStreamStatistics")
                 try {
