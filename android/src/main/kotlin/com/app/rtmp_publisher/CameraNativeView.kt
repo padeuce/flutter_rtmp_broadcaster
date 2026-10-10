@@ -15,7 +15,7 @@ import android.widget.Toast
 import com.pedro.encoder.input.video.CameraHelper.Facing.BACK
 import com.pedro.encoder.input.video.CameraHelper.Facing.FRONT
 import com.pedro.rtplibrary.rtmp.RtmpCamera2
-import com.pedro.rtplibrary.view.LightOpenGlView
+import com.pedro.rtplibrary.view.OpenGlView
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import net.ossrs.rtmp.ConnectCheckerRtmp
@@ -33,7 +33,13 @@ class CameraNativeView(
     SurfaceHolder.Callback,
     ConnectCheckerRtmp {
 
-    private val glView = LightOpenGlView(activity)
+    // Use the full OpenGlView rather than LightOpenGlView: the light variant's
+    // SimpleCameraRender overwrites the MVP matrix with rotation 0 in
+    // drawFrame(), so setRotation() is ignored and the preview stays in the
+    // camera's natural (portrait) orientation, appearing rotated 90° in a
+    // landscape activity. OpenGlView's CameraRender applies the rotation, so
+    // the preview is upright.
+    private val glView = OpenGlView(activity)
     private val rtmpCamera: RtmpCamera2
 
     private var isSurfaceCreated = false
