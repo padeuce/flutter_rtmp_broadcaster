@@ -375,23 +375,32 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
     }
 
     [_captureSession beginConfiguration];
+
+    // An AVCaptureVideoDataOutput accepts a single connection per media type.
+    // Remove the existing video connection before adding a new one, otherwise
+    // addConnection: raises "only accepts one connection of this media type at
+    // a time, and it is already connected".
+    if (_videoConnection != nil &&
+        [[_captureSession connections] containsObject:_videoConnection]) {
+        [_captureSession removeConnection:_videoConnection];
+    }
+    _videoConnection = nil;
+
     [_captureSession removeInput:_captureVideoInput];
-    if ([_captureSession canAddInput:newInput]) {
-        [_captureSession addInput:newInput];
+
+    const BOOL switched = [_captureSession canAddInput:newInput];
+    if (switched) {
+        // Add without connections so the session does not implicitly form its
+        // own video connection; the configured connection is added below.
+        [_captureSession addInputWithNoConnections:newInput];
         _captureVideoInput = newInput;
         _captureDevice = newDevice;
     } else {
         // Re-add the previous input so the session stays usable.
-        [_captureSession addInput:_captureVideoInput];
-        [_captureSession commitConfiguration];
-        _eventSink(@{
-            @"event" : @"error",
-            @"errorDescription" : @"Failed to switch camera input."
-        });
-        return NO;
+        [_captureSession addInputWithNoConnections:_captureVideoInput];
     }
 
-    // Rebuild the connection against the new input port and mirror the front
+    // Rebuild the connection against the active input port and mirror the front
     // camera, then re-apply the current device orientation.
     AVCaptureConnection *connection =
         [AVCaptureConnection connectionWithInputPorts:_captureVideoInput.ports
@@ -399,9 +408,20 @@ FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
     if ([_captureDevice position] == AVCaptureDevicePositionFront) {
         connection.videoMirrored = YES;
     }
-    [_captureSession addConnection:connection];
-    _videoConnection = connection;
+    if ([_captureSession canAddConnection:connection]) {
+        [_captureSession addConnection:connection];
+        _videoConnection = connection;
+    }
+
     [_captureSession commitConfiguration];
+
+    if (!switched) {
+        _eventSink(@{
+            @"event" : @"error",
+            @"errorDescription" : @"Failed to switch camera input."
+        });
+        return NO;
+    }
 
     [self updateVideoConnectionOrientation];
     [self setCaptureSessionPreset:_resolutionPreset];
